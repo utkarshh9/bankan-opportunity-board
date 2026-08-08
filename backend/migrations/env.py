@@ -12,6 +12,8 @@ from app.core.database import Base
 from app.users.models import User
 from app.teams.models import Team
 from app.boards.models import Board
+from app.columns.models import Column
+from app.tasks.models import Task
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

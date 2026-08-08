@@ -18,6 +18,8 @@ class Board(Base):
     # Relationships
     team = relationship("Team", back_populates="boards")
     creator = relationship("User", foreign_keys=[created_by])
+    columns = relationship("Column", back_populates="board", cascade="all, delete-orphan")
+    tasks = relationship("Task", back_populates="board", cascade="all, delete-orphan")
     
     def __repr__(self):
         return f"<Board {self.name}>"
