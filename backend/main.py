@@ -6,6 +6,9 @@ from app.teams.router import router as teams_router
 from app.boards.router import router as boards_router
 from app.columns.router import router as columns_router
 from app.tasks.router import router as tasks_router
+from app.comments.router import router as comments_router
+from app.notifications.router import router as notifications_router
+from app.activities.router import router as activities_router
 import uvicorn
 
 app = FastAPI(
@@ -21,6 +24,10 @@ app.include_router(teams_router, prefix="/api/v1")
 app.include_router(boards_router, prefix="/api/v1")
 app.include_router(columns_router, prefix="/api/v1")
 app.include_router(tasks_router, prefix="/api/v1")
+app.include_router(comments_router, prefix="/api/v1")
+app.include_router(notifications_router, prefix="/api/v1")
+app.include_router(activities_router, prefix="/api/v1")
+
 
 @app.get("/")
 async def root():

@@ -10,6 +10,10 @@ from app.boards.models import Board
 from app.teams.models import team_members
 from app.users.models import User
 from app.tasks.schemas import TaskCreate, TaskUpdate, TaskMove
+from app.notifications.service import NotificationService
+from app.notifications.models import NotificationType
+from app.activities.service import ActivityService
+from app.activities.models import ActivityType
 
 class TaskService:
     @staticmethod
@@ -80,6 +84,41 @@ class TaskService:
         await db.commit()
         await db.refresh(task)
         
+        # ✅ Create activity log
+        await ActivityService.create_activity(
+            db=db,
+            user_id=user_id,
+            activity_type=ActivityType.TASK_CREATED,
+            description=f"User created task '{task.title}'",
+            team_id=task.team_id,
+            board_id=task.board_id,
+            task_id=task.id,
+            extra_data={
+                "task_title": task.title,
+                "priority": task.priority,
+                "status": task.status
+            }
+        )
+        
+        # ✅ Create notification for assignee if assigned
+        if task_data.assigned_to and task_data.assigned_to != user_id:
+            await NotificationService.create_notification(
+                db=db,
+                user_id=task_data.assigned_to,
+                sender_id=user_id,
+                notification_type=NotificationType.TASK_ASSIGNED,
+                title="Task Assigned",
+                message=f"You have been assigned to task '{task.title}'",
+                task_id=task.id,
+                team_id=task.team_id,
+                board_id=task.board_id,
+                data={
+                    "task_title": task.title,
+                    "priority": task.priority,
+                    "task_id": task.id
+                }
+            )
+        
         return task
 
     @staticmethod
@@ -90,10 +129,10 @@ class TaskService:
         column_id: Optional[int] = None,
         status: Optional[str] = None,
         assigned_to: Optional[int] = None,
-        priority: Optional[str] = None,  # ✅ NEW: Add priority filter
+        priority: Optional[str] = None,
         skip: int = 0,
         limit: int = 100
-) ->     List[Task]:
+    ) -> List[Task]:
         """Get tasks with filters."""
         # Check access to board
         stmt = select(Board).where(Board.id == board_id)
@@ -133,7 +172,7 @@ class TaskService:
             conditions.append(Task.status == status)
         if assigned_to is not None:
             conditions.append(Task.assigned_to == assigned_to)
-        if priority:  # ✅ NEW: Add priority filter
+        if priority:
             conditions.append(Task.priority == priority)
 
         # Build the query
@@ -194,14 +233,19 @@ class TaskService:
         """Update a task."""
         task = await TaskService.get_task(db, task_id, user_id)
         
-        # Update fields
-        if task_data.title is not None:
+        # Track changes for activity log
+        changes = {}
+        if task_data.title is not None and task_data.title != task.title:
+            changes["title"] = {"old": task.title, "new": task_data.title}
             task.title = task_data.title
-        if task_data.description is not None:
+        if task_data.description is not None and task_data.description != task.description:
+            changes["description"] = {"old": task.description, "new": task_data.description}
             task.description = task_data.description
-        if task_data.priority is not None:
+        if task_data.priority is not None and task_data.priority != task.priority:
+            changes["priority"] = {"old": task.priority, "new": task_data.priority}
             task.priority = task_data.priority
-        if task_data.status is not None:
+        if task_data.status is not None and task_data.status != task.status:
+            changes["status"] = {"old": task.status, "new": task_data.status}
             task.status = task_data.status
             if task_data.status == TaskStatus.DONE:
                 task.is_completed = True
@@ -216,13 +260,49 @@ class TaskService:
             task.required_skills = task_data.required_skills
         if task_data.is_specialized is not None:
             task.is_specialized = task_data.is_specialized
-        if task_data.assigned_to is not None:
+        if task_data.assigned_to is not None and task_data.assigned_to != task.assigned_to:
+            changes["assigned_to"] = {"old": task.assigned_to, "new": task_data.assigned_to}
             task.assigned_to = task_data.assigned_to
+            
+            # ✅ Send notification for new assignment
+            if task_data.assigned_to and task_data.assigned_to != user_id:
+                await NotificationService.create_notification(
+                    db=db,
+                    user_id=task_data.assigned_to,
+                    sender_id=user_id,
+                    notification_type=NotificationType.TASK_ASSIGNED,
+                    title="Task Assigned",
+                    message=f"You have been assigned to task '{task.title}'",
+                    task_id=task.id,
+                    team_id=task.team_id,
+                    board_id=task.board_id,
+                    data={
+                        "task_title": task.title,
+                        "priority": task.priority,
+                        "task_id": task.id
+                    }
+                )
         if task_data.is_active is not None:
             task.is_active = task_data.is_active
         
         await db.commit()
         await db.refresh(task)
+        
+        # ✅ Create activity log if changes were made
+        if changes:
+            await ActivityService.create_activity(
+                db=db,
+                user_id=user_id,
+                activity_type=ActivityType.TASK_UPDATED,
+                description=f"User updated task '{task.title}'",
+                team_id=task.team_id,
+                board_id=task.board_id,
+                task_id=task.id,
+                changes=changes,
+                extra_data={
+                    "task_title": task.title
+                }
+            )
         
         return task
 
@@ -250,11 +330,14 @@ class TaskService:
                 detail="Target column not found"
             )
 
+        # Track old column
+        old_column_id = task.column_id
+        old_status = task.status
+
         # Update task
         task.column_id = move_data.column_id
 
-        # ✅ FIX: Update status based on column name
-        # Map column name to status
+        # Update status based on column name
         column_name_lower = column.name.lower()
         if "todo" in column_name_lower or "to do" in column_name_lower:
             task.status = TaskStatus.TODO
@@ -269,6 +352,43 @@ class TaskService:
 
         await db.commit()
         await db.refresh(task)
+
+        # ✅ Create activity log
+        await ActivityService.create_activity(
+            db=db,
+            user_id=user_id,
+            activity_type=ActivityType.TASK_MOVED,
+            description=f"User moved task '{task.title}' to {column.name}",
+            team_id=task.team_id,
+            board_id=task.board_id,
+            task_id=task.id,
+            changes={
+                "column": {"old": old_column_id, "new": task.column_id},
+                "status": {"old": old_status, "new": task.status}
+            },
+            extra_data={
+                "task_title": task.title,
+                "column_name": column.name
+            }
+        )
+
+        # ✅ Send notification to assignee if task was completed
+        if task.status == TaskStatus.DONE and task.assigned_to and task.assigned_to != user_id:
+            await NotificationService.create_notification(
+                db=db,
+                user_id=task.assigned_to,
+                sender_id=user_id,
+                notification_type=NotificationType.TASK_COMPLETED,
+                title="Task Completed",
+                message=f"Task '{task.title}' has been completed",
+                task_id=task.id,
+                team_id=task.team_id,
+                board_id=task.board_id,
+                data={
+                    "task_title": task.title,
+                    "task_id": task.id
+                }
+            )
 
         return task
 
@@ -299,6 +419,40 @@ class TaskService:
         await db.commit()
         await db.refresh(task)
         
+        # ✅ Create activity log
+        await ActivityService.create_activity(
+            db=db,
+            user_id=user_id,
+            activity_type=ActivityType.TASK_CLAIMED,
+            description=f"User claimed task '{task.title}'",
+            team_id=task.team_id,
+            board_id=task.board_id,
+            task_id=task.id,
+            extra_data={
+                "task_title": task.title,
+                "claimed_by": user_id
+            }
+        )
+        
+        # ✅ Send notification to task creator
+        if task.created_by != user_id:
+            await NotificationService.create_notification(
+                db=db,
+                user_id=task.created_by,
+                sender_id=user_id,
+                notification_type=NotificationType.TASK_CLAIMED,
+                title="Task Claimed",
+                message=f"Task '{task.title}' has been claimed",
+                task_id=task.id,
+                team_id=task.team_id,
+                board_id=task.board_id,
+                data={
+                    "task_title": task.title,
+                    "claimed_by": user_id,
+                    "task_id": task.id
+                }
+            )
+        
         return task
 
     @staticmethod
@@ -328,6 +482,20 @@ class TaskService:
         await db.commit()
         await db.refresh(task)
         
+        # ✅ Create activity log
+        await ActivityService.create_activity(
+            db=db,
+            user_id=user_id,
+            activity_type=ActivityType.TASK_UNCLAIMED,
+            description=f"User unclaimed task '{task.title}'",
+            team_id=task.team_id,
+            board_id=task.board_id,
+            task_id=task.id,
+            extra_data={
+                "task_title": task.title
+            }
+        )
+        
         return task
 
     @staticmethod
@@ -354,10 +522,48 @@ class TaskService:
                 detail="User is not a member of this team"
             )
         
+        old_assignee = task.assigned_to
         task.assigned_to = assignee_id
         
         await db.commit()
         await db.refresh(task)
+        
+        # ✅ Create activity log
+        await ActivityService.create_activity(
+            db=db,
+            user_id=user_id,
+            activity_type=ActivityType.TASK_ASSIGNED,
+            description=f"User assigned task '{task.title}' to user {assignee_id}",
+            team_id=task.team_id,
+            board_id=task.board_id,
+            task_id=task.id,
+            changes={
+                "assigned_to": {"old": old_assignee, "new": assignee_id}
+            },
+            extra_data={
+                "task_title": task.title,
+                "assignee_id": assignee_id
+            }
+        )
+        
+        # ✅ Send notification to new assignee
+        if assignee_id != user_id:
+            await NotificationService.create_notification(
+                db=db,
+                user_id=assignee_id,
+                sender_id=user_id,
+                notification_type=NotificationType.TASK_ASSIGNED,
+                title="Task Assigned",
+                message=f"You have been assigned to task '{task.title}'",
+                task_id=task.id,
+                team_id=task.team_id,
+                board_id=task.board_id,
+                data={
+                    "task_title": task.title,
+                    "priority": task.priority,
+                    "task_id": task.id
+                }
+            )
         
         return task
 
@@ -376,10 +582,10 @@ class TaskService:
                 detail="Task is already completed"
             )
         
-        # ✅ FIX: Find the "Done" column for this board
+        # Find the "Done" column for this board
         stmt = select(Column).where(
             Column.board_id == task.board_id,
-            Column.name.ilike("%done%"),  # Find column with "done" in name
+            Column.name.ilike("%done%"),
             Column.is_active == True
         ).order_by(Column.order)
         
@@ -387,11 +593,9 @@ class TaskService:
         done_column = result.scalar_one_or_none()
         
         if done_column:
-            # Move task to Done column
             task.column_id = done_column.id
             task.status = TaskStatus.DONE
         else:
-            # If no Done column found, just update status
             task.status = TaskStatus.DONE
         
         task.is_completed = True
@@ -399,6 +603,46 @@ class TaskService:
         
         await db.commit()
         await db.refresh(task)
+        
+        # ✅ Create activity log
+        await ActivityService.create_activity(
+            db=db,
+            user_id=user_id,
+            activity_type=ActivityType.TASK_COMPLETED,
+            description=f"User completed task '{task.title}'",
+            team_id=task.team_id,
+            board_id=task.board_id,
+            task_id=task.id,
+            extra_data={
+                "task_title": task.title,
+                "completed_at": task.completed_at.isoformat()
+            }
+        )
+        
+        # ✅ Send notification to task creator and assignee
+        recipients = set()
+        if task.created_by and task.created_by != user_id:
+            recipients.add(task.created_by)
+        if task.assigned_to and task.assigned_to != user_id:
+            recipients.add(task.assigned_to)
+
+        for recipient_id in recipients:
+            await NotificationService.create_notification(
+                db=db,
+                user_id=recipient_id,
+                sender_id=user_id,
+                notification_type=NotificationType.TASK_COMPLETED,
+                title="Task Completed",
+                message=f"Task '{task.title}' has been completed",
+                task_id=task.id,
+                team_id=task.team_id,
+                board_id=task.board_id,
+                data={
+                    "task_title": task.title,
+                    "completed_by": user_id,
+                    "task_id": task.id
+                }
+            )
         
         return task
 
@@ -412,7 +656,6 @@ class TaskService:
         task = await TaskService.get_task(db, task_id, user_id)
         
         # Only creator or team admin can delete
-        # Check if user is team admin
         stmt = select(team_members).where(
             team_members.c.team_id == task.team_id,
             team_members.c.user_id == user_id,
@@ -429,5 +672,20 @@ class TaskService:
         
         task.is_active = False
         await db.commit()
+        
+        # ✅ Create activity log
+        await ActivityService.create_activity(
+            db=db,
+            user_id=user_id,
+            activity_type=ActivityType.TASK_DELETED,
+            description=f"User deleted task '{task.title}'",
+            team_id=task.team_id,
+            board_id=task.board_id,
+            task_id=task.id,
+            extra_data={
+                "task_title": task.title,
+                "task_id": task.id
+            }
+        )
         
         return True

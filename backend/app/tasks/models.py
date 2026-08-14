@@ -61,6 +61,7 @@ class Task(Base):
     assignee = relationship("User", foreign_keys=[assigned_to])
     creator = relationship("User", foreign_keys=[created_by])
     claimer = relationship("User", foreign_keys=[claimed_by])
+    comments = relationship("Comment", back_populates="task", cascade="all, delete-orphan")
     
     def __repr__(self):
         return f"<Task {self.title}>"
