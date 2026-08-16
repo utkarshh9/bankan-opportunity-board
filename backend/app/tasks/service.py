@@ -3,6 +3,8 @@ from sqlalchemy import select, func, and_, or_
 from typing import List, Optional
 from fastapi import HTTPException, status
 from datetime import datetime
+from app.websocket.manager import manager
+import json
 
 from app.tasks.models import Task, TaskStatus, TaskPriority
 from app.columns.models import Column
@@ -118,6 +120,27 @@ class TaskService:
                     "task_id": task.id
                 }
             )
+
+        # Websocket: Broadcast task creation to board members
+        try:
+            await manager.broadcast_task_update(
+                board_id=task.board_id,
+                task_data={
+                    "action": "created",
+                    "task": {
+                        "id": task.id,
+                        "title": task.title,
+                        "status": task.status,
+                        "column_id": task.column_id,
+                        "priority": task.priority,
+                        "assigned_to": task.assigned_to,
+                        "created_by": task.created_by
+                    }
+                },
+                exclude_user=user_id
+            )
+        except Exception as e:
+            print(f"⚠️ WebSocket broadcast error: {e}")
         
         return task
 
@@ -390,6 +413,24 @@ class TaskService:
                 }
             )
 
+        # Websocket: Broadcast task move to board members
+        try:
+            await manager.broadcast_task_update(
+                board_id=task.board_id,
+                task_data={
+                    "action": "moved",
+                    "task": {
+                        "id": task.id,
+                        "title": task.title,
+                        "status": task.status,
+                        "column_id": task.column_id
+                    }
+                },
+                exclude_user=user_id
+            )
+        except Exception as e:
+            print(f"⚠️ WebSocket broadcast error: {e}")
+
         return task
 
     @staticmethod
@@ -643,6 +684,25 @@ class TaskService:
                     "task_id": task.id
                 }
             )
+
+        # Websocket: Broadcast task completion to board members
+        try:
+            await manager.broadcast_task_update(
+                board_id=task.board_id,
+                task_data={
+                    "action": "completed",
+                    "task": {
+                        "id": task.id,
+                        "title": task.title,
+                        "status": task.status,
+                        "column_id": task.column_id,
+                        "completed_at": task.completed_at.isoformat() if task.completed_at else None
+                    }
+                },
+                exclude_user=user_id
+            )
+        except Exception as e:
+            print(f"⚠️ WebSocket broadcast error: {e}")
         
         return task
 

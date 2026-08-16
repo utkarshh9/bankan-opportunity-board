@@ -2,6 +2,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import List, Optional, Set
 from fastapi import HTTPException, status
+from app.websocket.manager import manager
 
 from app.comments.models import Comment
 from app.tasks.models import Task
@@ -58,13 +59,11 @@ class CommentService:
                     detail="Parent comment not found"
                 )
         
-        # ✅ Store mentions from the request - handle different formats
+        # Store mentions from the request
         mentions_list = []
         if comment_data.mentions:
-            # If mentions is a list, use it directly
             if isinstance(comment_data.mentions, list):
                 mentions_list = comment_data.mentions
-            # If mentions is a string, try to parse it
             elif isinstance(comment_data.mentions, str):
                 try:
                     import json
@@ -101,7 +100,7 @@ class CommentService:
             }
         )
         
-        # ✅ Create notifications for task assignee and mentioned users
+        # Create notifications for task assignee and mentioned users
         recipients: Set[int] = set()
         
         # Add task assignee if exists and not the comment author
@@ -109,7 +108,7 @@ class CommentService:
             recipients.add(task.assigned_to)
             print(f"🔔 Adding assignee {task.assigned_to} to recipients")
         
-        # ✅ Add mentioned users from the stored mentions list
+        # Add mentioned users
         if mentions_list:
             for mention_id in mentions_list:
                 if mention_id != user_id:
@@ -160,9 +159,53 @@ class CommentService:
                     )
                     print(f"✅ Notification created with ID: {notification.id}")
                     
+                    # ✅ NEW: Send real-time notification via WebSocket
+                    try:
+                        notification_data = {
+                            "id": notification.id,
+                            "user_id": notification.user_id,
+                            "sender_id": notification.sender_id,
+                            "notification_type": notification.notification_type,
+                            "title": notification.title,
+                            "message": notification.message,
+                            "task_id": notification.task_id,
+                            "team_id": notification.team_id,
+                            "board_id": notification.board_id,
+                            "comment_id": notification.comment_id,
+                            "data": notification.data,
+                            "is_read": notification.is_read,
+                            "created_at": notification.created_at.isoformat() if notification.created_at else None
+                        }
+                        await manager.send_notification(
+                            user_id=recipient_id,
+                            notification_data=notification_data
+                        )
+                        print(f"📡 WebSocket notification sent to user {recipient_id}")
+                    except Exception as ws_error:
+                        print(f"⚠️ WebSocket notification error: {ws_error}")
+                    
                 except Exception as e:
                     print(f"❌ Error creating notification for user {recipient_id}: {e}")
-        
+    
+        # WebSocket: Broadcast the new comment to all users in the board
+        try:
+            await manager.broadcast_comment_update(
+                board_id=task.board_id,
+                comment_data={
+                    "action": "created",
+                    "comment": {
+                        "id": comment.id,
+                        "content": comment.content,
+                        "user_id": comment.user_id,
+                        "task_id": comment.task_id,
+                        "created_at": comment.created_at.isoformat() if comment.created_at else None
+                    }
+                },
+                exclude_user=user_id
+            )
+        except Exception as e:
+            print(f"❌ Error broadcasting comment update: {e}")
+    
         return comment
 
     @staticmethod
