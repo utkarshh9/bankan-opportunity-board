@@ -1,6 +1,7 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 import json
+import logging
 
 from app.core.database import get_db
 from app.core.security import decode_token
@@ -8,6 +9,9 @@ from app.websocket.manager import manager
 from app.users.models import User
 from app.boards.models import Board
 from app.teams.models import team_members
+
+# ✅ Create logger
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["WebSocket"])
 
@@ -21,21 +25,21 @@ async def websocket_board(
     user_id = None
     
     try:
-        # ✅ Authenticate user via token query parameter
-        # In production, you'd use a better method (cookies, headers)
+        print(f"🔌 WebSocket connection attempt to board {board_id}")
+        
+        # Authenticate user via token query parameter
         if token:
             payload = decode_token(token)
             if payload:
                 user_id = int(payload.get("sub"))
+                print(f"✅ User {user_id} authenticated")
         
         if not user_id:
+            print("❌ No user_id from token")
             await websocket.close(code=4001, reason="Authentication required")
             return
         
-        # ✅ Verify user has access to this board
-        # This would use your existing permission logic
-        # For now, we'll check if user is a team member
-        # Get board's team_id
+        # Verify user has access to this board
         async for db in get_db():
             from sqlalchemy import select
             stmt = select(Board).where(Board.id == board_id)
@@ -59,16 +63,17 @@ async def websocket_board(
                 return
             break
         
-        # ✅ Connect to WebSocket
+        # Connect to WebSocket
         await manager.connect(websocket, user_id, board_id)
+        print(f"✅ User {user_id} connected to board {board_id}")
         
-        # ✅ Handle messages
+        # Handle messages
         while True:
             try:
                 data = await websocket.receive_text()
                 message = json.loads(data)
                 
-                # ✅ Handle different message types
+                # Handle different message types
                 if message.get("type") == "ping":
                     await websocket.send_json({"type": "pong"})
                 
@@ -85,9 +90,8 @@ async def websocket_board(
                         exclude_user=user_id
                     )
                 
-                # Add more message types as needed
-                
             except WebSocketDisconnect:
+                print(f"🔌 User {user_id} disconnected")
                 break
             except json.JSONDecodeError:
                 await websocket.send_json({
@@ -95,6 +99,7 @@ async def websocket_board(
                     "data": {"message": "Invalid JSON"}
                 })
             except Exception as e:
+                # ✅ Now logger is defined
                 logger.error(f"Error handling message: {e}")
                 await websocket.send_json({
                     "type": "error",
@@ -103,11 +108,14 @@ async def websocket_board(
     
     except WebSocketDisconnect:
         if user_id:
+            print(f"🔌 User {user_id} disconnected from board {board_id}")
             manager.disconnect(user_id, board_id)
     except Exception as e:
+        # ✅ Now logger is defined
         logger.error(f"WebSocket error: {e}")
         if user_id:
             manager.disconnect(user_id, board_id)
+
 
 @router.websocket("/ws/notifications")
 async def websocket_notifications(
@@ -118,13 +126,17 @@ async def websocket_notifications(
     user_id = None
     
     try:
+        print("🔌 WebSocket notification connection attempt")
+        
         # Authenticate user
         if token:
             payload = decode_token(token)
             if payload:
                 user_id = int(payload.get("sub"))
+                print(f"✅ User {user_id} authenticated for notifications")
         
         if not user_id:
+            print("❌ No user_id from token")
             await websocket.close(code=4001, reason="Authentication required")
             return
         
@@ -160,6 +172,7 @@ async def websocket_notifications(
                         pass
                 
             except WebSocketDisconnect:
+                print(f"🔌 User {user_id} disconnected from notifications")
                 break
             except json.JSONDecodeError:
                 await websocket.send_json({
@@ -171,6 +184,7 @@ async def websocket_notifications(
         if user_id and user_id in manager.user_connections:
             del manager.user_connections[user_id]
     except Exception as e:
-        logger.error(f"WebSocket error: {e}")
+        # ✅ Now logger is defined
+        logger.error(f"WebSocket notification error: {e}")
         if user_id and user_id in manager.user_connections:
             del manager.user_connections[user_id]

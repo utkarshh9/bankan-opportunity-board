@@ -10,6 +10,7 @@ from app.comments.router import router as comments_router
 from app.notifications.router import router as notifications_router
 from app.activities.router import router as activities_router
 from app.websocket.router import router as websocket_router
+from app.analytics.router import router as analytics_router
 import uvicorn
 
 app = FastAPI(
@@ -28,6 +29,9 @@ app.include_router(tasks_router, prefix="/api/v1")
 app.include_router(comments_router, prefix="/api/v1")
 app.include_router(notifications_router, prefix="/api/v1")
 app.include_router(activities_router, prefix="/api/v1")
+app.include_router(analytics_router, prefix="/api/v1")
+
+# Include WebSocket router
 app.include_router(websocket_router)
 
 @app.get("/")

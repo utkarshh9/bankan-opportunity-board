@@ -17,6 +17,7 @@ from app.tasks.models import Task
 from app.comments.models import Comment
 from app.activities.models import Activity
 from app.notifications.models import Notification
+from app.analytics.models import Sprint
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
